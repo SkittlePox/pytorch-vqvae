@@ -51,10 +51,15 @@ def test(data_loader, model, args, writer):
 
     return loss_recons.item(), loss_vq.item()
 
-def generate_samples(images, model, args):
-    with torch.no_grad():
-        images = images.to(args.device)
-        x_tilde, _, _ = model(images)
+def generate_samples(images, model, args, vq=False):
+    if vq:
+        with torch.no_grad():
+            images = images.to(args.device)
+            x_tilde = model.decode(model.encode(images))
+    else:
+        with torch.no_grad():
+            images = images.to(args.device)
+            x_tilde, _, _ = model(images)
     return x_tilde
 
 def main(args):
@@ -126,6 +131,11 @@ def main(args):
     grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
     writer.add_image('reconstruction', grid, 0)
 
+    # Generate the vector-quantized samples first once
+    reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
+    grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
+    writer.add_image('reconstruction-vq', grid_vq, 0)
+
     best_loss = -1.
     for epoch in range(args.num_epochs):
         train(train_loader, model, optimizer, args, writer)
@@ -134,6 +144,10 @@ def main(args):
         reconstruction = generate_samples(fixed_images, model, args)
         grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
         writer.add_image('reconstruction', grid, epoch + 1)
+
+        reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
+        grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
+        writer.add_image('reconstruction-vq', grid_vq, epoch + 1)
 
         if (epoch == 0) or (loss < best_loss):
             best_loss = loss
@@ -174,10 +188,12 @@ if __name__ == '__main__':
     # Miscellaneous
     parser.add_argument('--output-folder', type=str, default='vqvae',
         help='name of the output folder (default: vqvae)')
-    parser.add_argument('--num-workers', type=int, default=mp.cpu_count() - 1,
-        help='number of workers for trajectories sampling (default: {0})'.format(mp.cpu_count() - 1))
+    parser.add_argument('--num-workers', type=int, default=4,
+        help='number of workers for trajectories sampling (default: 4)')
     parser.add_argument('--device', type=str, default='cpu',
         help='set the device (cpu or cuda, default: cpu)')
+    parser.add_argument('--verbose', type=bool, default=False,
+        help='print statements after each epoch')
 
     args = parser.parse_args()
 
@@ -187,7 +203,7 @@ if __name__ == '__main__':
     if not os.path.exists('./models'):
         os.makedirs('./models')
     # Device
-    args.device = torch.device(args.device
+    args.device = torch.device('cuda'
         if torch.cuda.is_available() else 'cpu')
     # Slurm
     if 'SLURM_JOB_ID' in os.environ:

@@ -68,25 +68,52 @@ class VAE(nn.Module):
 
 
 class VQEmbedding(nn.Module):
+    """
+    Vector Quantization Embedding Layer
+    This layer takes a tensor z_e_x and maps it to a discrete latent space.
+    The latent space is represented by a dictionary of embeddings, self.embedding.
+    """
     def __init__(self, K, D):
+        """
+        Initialize the layer.
+        Args:
+            K: the number of embeddings
+            D: the dimensionality of each embedding
+        """
         super().__init__()
-        self.embedding = nn.Embedding(K, D)
-        self.embedding.weight.data.uniform_(-1./K, 1./K)
+        self.embedding = nn.Embedding(K, D)  # The embedding dictionary
+        self.embedding.weight.data.uniform_(-1./K, 1./K)  # Initialize the weights uniformly
 
     def forward(self, z_e_x):
-        z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()
-        latents = vq(z_e_x_, self.embedding.weight)
+        """
+        Map the input tensor to its nearest embedding.
+        Args:
+            z_e_x: the input tensor
+        Returns:
+            latents: the tensor of nearest embeddings
+        """
+        z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions
+        latents = vq(z_e_x_, self.embedding.weight)  # Map the input tensor to its nearest embedding
         return latents
 
     def straight_through(self, z_e_x):
-        z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()
-        z_q_x_, indices = vq_st(z_e_x_, self.embedding.weight.detach())
-        z_q_x = z_q_x_.permute(0, 3, 1, 2).contiguous()
+        """
+        Perform a straight-through estimator of the gradients.
+        This function is used during backpropagation.
+        Args:
+            z_e_x: the input tensor
+        Returns:
+            z_q_x: the tensor of nearest embeddings
+            z_q_x_bar: the tensor of nearest embeddings with respect to the original tensor
+        """
+        z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions
+        z_q_x_, indices = vq_st(z_e_x_, self.embedding.weight.detach())  # Map the input tensor to its nearest embedding
+        z_q_x = z_q_x_.permute(0, 3, 1, 2).contiguous()  # Rearrange the tensor dimensions back
 
         z_q_x_bar_flatten = torch.index_select(self.embedding.weight,
-            dim=0, index=indices)
-        z_q_x_bar_ = z_q_x_bar_flatten.view_as(z_e_x_)
-        z_q_x_bar = z_q_x_bar_.permute(0, 3, 1, 2).contiguous()
+            dim=0, index=indices)  # Select the embeddings by the indices
+        z_q_x_bar_ = z_q_x_bar_flatten.view_as(z_e_x_)  # Reshape the tensor to the original shape
+        z_q_x_bar = z_q_x_bar_.permute(0, 3, 1, 2).contiguous()  # Rearrange the tensor dimensions back
 
         return z_q_x, z_q_x_bar
 
@@ -119,7 +146,7 @@ class VectorQuantizedVAE(nn.Module):
             ResBlock(dim),
         )
 
-        self.codebook = VQEmbedding(K, dim)
+        self.codebook = VQEmbedding(K, dim)     # This is very important.
 
         self.decoder = nn.Sequential(
             ResBlock(dim),
@@ -132,21 +159,37 @@ class VectorQuantizedVAE(nn.Module):
             nn.Tanh()
         )
 
+        self.fc = nn.Linear(dim, K * dim)  # Fully connected layer to output K vectors
+        self.K = K
+        self.dim = dim
+
         self.apply(weights_init)
 
     def encode(self, x):
+        # Pass the input through the encoder
         z_e_x = self.encoder(x)
-        latents = self.codebook(z_e_x)
+        # Apply global average pooling to get a single vector per image
+        z_e_x = z_e_x.mean(dim=[2, 3])
+        # Pass through fully connected layer to get K vectors per image
+        z_e_x = self.fc(z_e_x).view(-1, self.K, self.dim)
+        # Quantize each vector using the codebook
+        latents = [self.codebook(vec) for vec in z_e_x.split(1, dim=1)]
         return latents
 
     def decode(self, latents):
+        # Convert the latents to embeddings using the codebook
         z_q_x = self.codebook.embedding(latents).permute(0, 3, 1, 2)  # (B, D, H, W)
+        # Pass the embeddings through the decoder to generate the output
         x_tilde = self.decoder(z_q_x)
         return x_tilde
 
     def forward(self, x):
+        # Pass the input through the encoder
         z_e_x = self.encoder(x)
+        # Quantize the output of the encoder using the codebook
+        # Also get the straight-through estimator for the gradients
         z_q_x_st, z_q_x = self.codebook.straight_through(z_e_x)
+        # Pass the straight-through estimator through the decoder to generate the output
         x_tilde = self.decoder(z_q_x_st)
         return x_tilde, z_e_x, z_q_x
 
