@@ -6,7 +6,7 @@ Project Report link: [final_project.pdf](final_project.pdf)
 ### Instructions
 1. To train the VQVAE with default arguments as discussed in the report, execute:
 ```
-python vqvae.py --data-folder /tmp/miniimagenet --output-folder models/vqvae
+python vqvae.py --data-folder /tmp/miniimagenet --output-folder models/vqvae --dataset mnist
 ```
 2. To train the PixelCNN prior on the latents, execute:
 ```

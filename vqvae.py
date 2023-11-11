@@ -64,7 +64,7 @@ def main(args):
     if args.dataset in ['mnist', 'fashion-mnist', 'cifar10']:
         transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+            transforms.Normalize((0.5,), (0.5,))
         ])
         if args.dataset == 'mnist':
             # Define the train & test datasets
@@ -115,7 +115,7 @@ def main(args):
 
     # Fixed images for Tensorboard
     fixed_images, _ = next(iter(test_loader))
-    fixed_grid = make_grid(fixed_images, nrow=8, range=(-1, 1), normalize=True)
+    fixed_grid = make_grid(fixed_images, nrow=8, value_range=(-1, 1), normalize=True)
     writer.add_image('original', fixed_grid, 0)
 
     model = VectorQuantizedVAE(num_channels, args.hidden_size, args.k).to(args.device)
@@ -123,7 +123,7 @@ def main(args):
 
     # Generate the samples first once
     reconstruction = generate_samples(fixed_images, model, args)
-    grid = make_grid(reconstruction.cpu(), nrow=8, range=(-1, 1), normalize=True)
+    grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
     writer.add_image('reconstruction', grid, 0)
 
     best_loss = -1.
@@ -132,7 +132,7 @@ def main(args):
         loss, _ = test(valid_loader, model, args, writer)
 
         reconstruction = generate_samples(fixed_images, model, args)
-        grid = make_grid(reconstruction.cpu(), nrow=8, range=(-1, 1), normalize=True)
+        grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
         writer.add_image('reconstruction', grid, epoch + 1)
 
         if (epoch == 0) or (loss < best_loss):
