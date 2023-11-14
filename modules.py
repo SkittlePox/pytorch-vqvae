@@ -92,8 +92,8 @@ class VQEmbedding(nn.Module):
         Returns:
             latents: the tensor of nearest embeddings
         """
-        z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions
-        latents = vq(z_e_x_, self.embedding.weight)  # Map the input tensor to its nearest embedding
+        # z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions
+        latents = vq(z_e_x, self.embedding.weight)  # Map the input tensor to its nearest embedding
         return latents
 
     def straight_through(self, z_e_x):
@@ -106,14 +106,14 @@ class VQEmbedding(nn.Module):
             z_q_x: the tensor of nearest embeddings
             z_q_x_bar: the tensor of nearest embeddings with respect to the original tensor
         """
-        z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions
-        z_q_x_, indices = vq_st(z_e_x_, self.embedding.weight.detach())  # Map the input tensor to its nearest embedding
-        z_q_x = z_q_x_.permute(0, 3, 1, 2).contiguous()  # Rearrange the tensor dimensions back
+        # z_e_x_ = z_e_x.permute(0, 2, 3, 1).contiguous()  # Rearrange the tensor dimensions
+        z_q_x, indices = vq_st(z_e_x, self.embedding.weight.detach())  # Map the input tensor to its nearest embedding
+        # z_q_x = z_q_x_.permute(0, 3, 1, 2).contiguous()  # Rearrange the tensor dimensions back
 
         z_q_x_bar_flatten = torch.index_select(self.embedding.weight,
             dim=0, index=indices)  # Select the embeddings by the indices
-        z_q_x_bar_ = z_q_x_bar_flatten.view_as(z_e_x_)  # Reshape the tensor to the original shape
-        z_q_x_bar = z_q_x_bar_.permute(0, 3, 1, 2).contiguous()  # Rearrange the tensor dimensions back
+        z_q_x_bar = z_q_x_bar_flatten.view_as(z_e_x)  # Reshape the tensor to the original shape
+        # z_q_x_bar = z_q_x_bar_.permute(0, 3, 1, 2).contiguous()  # Rearrange the tensor dimensions back
 
         return z_q_x, z_q_x_bar
 
@@ -137,7 +137,7 @@ class ResBlock(nn.Module):
 class VectorQuantizedVAE(nn.Module):
     def __init__(self, input_dim, dim, K=512):
         super().__init__()
-        self.encoder = nn.Sequential(
+        self.image_encoder = nn.Sequential(
             nn.Conv2d(input_dim, dim, 4, 2, 1),
             nn.BatchNorm2d(dim),
             nn.ReLU(True),
@@ -167,31 +167,44 @@ class VectorQuantizedVAE(nn.Module):
 
     def encode(self, x):
         # Pass the input through the encoder
-        z_e_x = self.encoder(x)
+        z_e_x = self.image_encoder(x)
+        # Now we need to vector quantize
+        # print(z_e_x.size()) # torch.Size([16, 256, 7, 7])
         # Apply global average pooling to get a single vector per image
         z_e_x = z_e_x.mean(dim=[2, 3])
+        # print(z_e_x.size()) # torch.Size([16, 256])
         # Pass through fully connected layer to get K vectors per image
         z_e_x = self.fc(z_e_x).view(-1, self.K, self.dim)
         # Quantize each vector using the codebook
-        latents = [self.codebook(vec) for vec in z_e_x.split(1, dim=1)]
+        latents = torch.stack([self.codebook(vec) for vec in z_e_x.split(1, dim=1)])
         return latents
 
     def decode(self, latents):
         # Convert the latents to embeddings using the codebook
-        z_q_x = self.codebook.embedding(latents).permute(0, 3, 1, 2)  # (B, D, H, W)
+        print(latents.size())
+        z_q_x = self.codebook.embedding(latents.long())
         # Pass the embeddings through the decoder to generate the output
         x_tilde = self.decoder(z_q_x)
         return x_tilde
 
     def forward(self, x):
         # Pass the input through the encoder
-        z_e_x = self.encoder(x)
+        z_e_x = self.image_encoder(x)
+        # Apply global average pooling to get a single vector per image
+        z_e_x = z_e_x.mean(dim=[2, 3])
+        # print(z_e_x.size()) # torch.Size([16, 256])
+        # Pass through fully connected layer to get K vectors per image
+        z_e_x = self.fc(z_e_x).view(-1, self.K, self.dim)
         # Quantize the output of the encoder using the codebook
         # Also get the straight-through estimator for the gradients
-        z_q_x_st, z_q_x = self.codebook.straight_through(z_e_x)
+        sss = [self.codebook.straight_through(vec) for vec in z_e_x.split(1, dim=1)]
+        latents = torch.stack([s[0] for s in sss])
+        gradients = torch.stack([s[1] for s in sss])
+
+        # z_q_x_st, z_q_x = self.codebook.straight_through(z_e_x)
         # Pass the straight-through estimator through the decoder to generate the output
-        x_tilde = self.decoder(z_q_x_st)
-        return x_tilde, z_e_x, z_q_x
+        x_tilde = self.decode(latents)
+        return x_tilde, z_e_x, gradients
 
 
 class GatedActivation(nn.Module):

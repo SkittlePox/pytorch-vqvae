@@ -131,10 +131,10 @@ def main(args):
     grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
     writer.add_image('reconstruction', grid, 0)
 
-    # Generate the vector-quantized samples first once
-    reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
-    grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
-    writer.add_image('reconstruction-vq', grid_vq, 0)
+    # # Generate the vector-quantized samples first once
+    # reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
+    # grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
+    # writer.add_image('reconstruction-vq', grid_vq, 0)
 
     best_loss = -1.
     for epoch in range(args.num_epochs):
@@ -145,9 +145,9 @@ def main(args):
         grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
         writer.add_image('reconstruction', grid, epoch + 1)
 
-        reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
-        grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
-        writer.add_image('reconstruction-vq', grid_vq, epoch + 1)
+        # reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
+        # grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
+        # writer.add_image('reconstruction-vq', grid_vq, epoch + 1)
 
         if (epoch == 0) or (loss < best_loss):
             best_loss = loss
@@ -166,7 +166,7 @@ if __name__ == '__main__':
     # General
     parser.add_argument('--data-folder', type=str,
         help='name of the data folder')
-    parser.add_argument('--dataset', type=str,
+    parser.add_argument('--dataset', type=str, default="mnist",
         help='name of the dataset (mnist, fashion-mnist, cifar10, miniimagenet)')
 
     # Latent space
@@ -188,10 +188,10 @@ if __name__ == '__main__':
     # Miscellaneous
     parser.add_argument('--output-folder', type=str, default='vqvae',
         help='name of the output folder (default: vqvae)')
-    parser.add_argument('--num-workers', type=int, default=4,
-        help='number of workers for trajectories sampling (default: 4)')
-    parser.add_argument('--device', type=str, default='cpu',
-        help='set the device (cpu or cuda, default: cpu)')
+    parser.add_argument('--num-workers', type=int, default=1,
+        help='number of workers for trajectories sampling (default: 1)')
+    parser.add_argument('--device', type=str, default='cuda',
+        help='set the device (cpu or cuda, default: cuda)')
     parser.add_argument('--verbose', type=bool, default=False,
         help='print statements after each epoch')
 
