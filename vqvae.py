@@ -3,8 +3,9 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms, datasets
 from torchvision.utils import save_image, make_grid
+from torch.distributions.normal import Normal
 
-from modules import VectorQuantizedVAE, to_scalar
+from modules import VectorQuantizedVAE, VAE, to_scalar
 from datasets import MiniImagenet
 
 from tensorboardX import SummaryWriter
@@ -14,52 +15,75 @@ def train(data_loader, model, optimizer, args, writer):
         images = images.to(args.device)
 
         optimizer.zero_grad()
-        x_tilde, z_e_x, z_q_x = model(images)
 
-        # Reconstruction loss
-        loss_recons = F.mse_loss(x_tilde, images)
-        # Vector quantization objective
-        loss_vq = F.mse_loss(z_q_x, z_e_x.detach())
-        # Commitment objective
-        loss_commit = F.mse_loss(z_e_x, z_q_x.detach())
+        if args.arch == 'vqvae':
+            x_tilde, z_e_x, z_q_x = model(images)
+            # Reconstruction loss
+            loss_recons = F.mse_loss(x_tilde, images)
+            # Vector quantization objective
+            loss_vq = F.mse_loss(z_q_x, z_e_x.detach())
+            # Commitment objective
+            loss_commit = F.mse_loss(z_e_x, z_q_x.detach())
+            loss = loss_recons + loss_vq + args.beta * loss_commit
+            # Logs
+            writer.add_scalar('loss/train/reconstruction', loss_recons.item(), args.steps)
+            writer.add_scalar('loss/train/quantization', loss_vq.item(), args.steps)
+        
+        elif args.arch == 'vae':
+            x_tilde, kl_d = model(images)
+            loss_recons = F.mse_loss(x_tilde, images, reduction='sum') / images.size(0)
+            loss = loss_recons + kl_d
+            nll = -Normal(x_tilde, torch.ones_like(x_tilde)).log_prob(images)
+            log_px = nll.mean().item() - np.log(128) + kl_d.item()
+            log_px /= np.log(2)
+            # Logs
+            writer.add_scalar('loss/train/reconstruction', loss_recons.item(), args.steps)
+            writer.add_scalar('loss/train/kl-divergence', kl_d, args.steps)
 
-        loss = loss_recons + loss_vq + args.beta * loss_commit
         loss.backward()
-
-        # Logs
-        writer.add_scalar('loss/train/reconstruction', loss_recons.item(), args.steps)
-        writer.add_scalar('loss/train/quantization', loss_vq.item(), args.steps)
-
         optimizer.step()
         args.steps += 1
 
 def test(data_loader, model, args, writer):
+    if args.arch == 'vqvae':
+        with torch.no_grad():
+            loss_recons, loss_vq = 0., 0.
+            for images, _ in data_loader:
+                images = images.to(args.device)
+                x_tilde, z_e_x, z_q_x = model(images)
+                loss_recons += F.mse_loss(x_tilde, images)
+                loss_vq += F.mse_loss(z_q_x, z_e_x)
+
+            loss_recons /= len(data_loader)
+            loss_vq /= len(data_loader)
+
+        # Logs
+        writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
+        writer.add_scalar('loss/test/quantization', loss_vq.item(), args.steps)
+
+        return loss_recons.item(), loss_vq.item()
+    elif args.arch == 'vae':
+        with torch.no_grad():
+            loss_recons = 0.
+            for images, _ in data_loader:
+                images = images.to(args.device)
+                x_tilde, kl_d = model(images)
+                loss_recons = F.mse_loss(x_tilde, images, reduction='sum') / images.size(0)
+                loss_with_kl = loss_recons + kl_d
+
+            loss_recons /= len(data_loader)
+            loss_with_kl /= len(data_loader)
+
+        # Logs
+        writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
+        writer.add_scalar('loss/test/total', loss_with_kl.item(), args.steps)
+
+        return loss_recons.item(), loss_with_kl.item()
+
+def generate_samples(images, model, args):
     with torch.no_grad():
-        loss_recons, loss_vq = 0., 0.
-        for images, _ in data_loader:
-            images = images.to(args.device)
-            x_tilde, z_e_x, z_q_x = model(images)
-            loss_recons += F.mse_loss(x_tilde, images)
-            loss_vq += F.mse_loss(z_q_x, z_e_x)
-
-        loss_recons /= len(data_loader)
-        loss_vq /= len(data_loader)
-
-    # Logs
-    writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
-    writer.add_scalar('loss/test/quantization', loss_vq.item(), args.steps)
-
-    return loss_recons.item(), loss_vq.item()
-
-def generate_samples(images, model, args, vq=False):
-    if vq:
-        with torch.no_grad():
-            images = images.to(args.device)
-            x_tilde = model.decode(model.encode(images))
-    else:
-        with torch.no_grad():
-            images = images.to(args.device)
-            x_tilde, _, _ = model(images)
+        images = images.to(args.device)
+        x_tilde, _ = model(images)
     return x_tilde
 
 def main(args):
@@ -123,18 +147,17 @@ def main(args):
     fixed_grid = make_grid(fixed_images, nrow=8, value_range=(-1, 1), normalize=True)
     writer.add_image('original', fixed_grid, 0)
 
-    model = VectorQuantizedVAE(num_channels, args.hidden_size, args.k).to(args.device)
+    # Instantiate model
+    if args.arch == 'vae':
+        model = VAE(input_dim=num_channels, dim=args.hidden_size*2, z_dim=args.hidden_size).to(args.device)
+    elif args.arch == 'vqvae':
+        model = VectorQuantizedVAE(num_channels, args.hidden_size, args.k).to(args.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Generate the samples first once
     reconstruction = generate_samples(fixed_images, model, args)
     grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
     writer.add_image('reconstruction', grid, 0)
-
-    # # Generate the vector-quantized samples first once
-    # reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
-    # grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
-    # writer.add_image('reconstruction-vq', grid_vq, 0)
 
     best_loss = -1.
     for epoch in range(args.num_epochs):
@@ -144,10 +167,6 @@ def main(args):
         reconstruction = generate_samples(fixed_images, model, args)
         grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
         writer.add_image('reconstruction', grid, epoch + 1)
-
-        # reconstruction_vq = generate_samples(fixed_images, model, args, vq=True)
-        # grid_vq = make_grid(reconstruction_vq.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
-        # writer.add_image('reconstruction-vq', grid_vq, epoch + 1)
 
         if (epoch == 0) or (loss < best_loss):
             best_loss = loss
@@ -164,32 +183,36 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='VQ-VAE')
 
     # General
-    parser.add_argument('--data-folder', type=str,
+    parser.add_argument('--data-folder', type=str, default='/users/bspiegel/data/bspiegel/mnist',
         help='name of the data folder')
-    parser.add_argument('--dataset', type=str, default="mnist",
+    parser.add_argument('--dataset', type=str, default='mnist',
         help='name of the dataset (mnist, fashion-mnist, cifar10, miniimagenet)')
+    
+    # Architecture
+    parser.add_argument('--arch', type=str, default='vae',
+        help='which architecture to use')
 
     # Latent space
     parser.add_argument('--hidden-size', type=int, default=256,
         help='size of the latent vectors (default: 256)')
-    parser.add_argument('--k', type=int, default=512,
-        help='number of latent vectors (default: 512)')
+    parser.add_argument('--k', type=int, default=128,
+        help='number of latent vectors (default: 128)')
 
     # Optimization
     parser.add_argument('--batch-size', type=int, default=128,
         help='batch size (default: 128)')
-    parser.add_argument('--num-epochs', type=int, default=100,
-        help='number of epochs (default: 100)')
-    parser.add_argument('--lr', type=float, default=2e-4,
-        help='learning rate for Adam optimizer (default: 2e-4)')
+    parser.add_argument('--num-epochs', type=int, default=25,
+        help='number of epochs (default: 25)')
+    parser.add_argument('--lr', type=float, default=1e-3,
+        help='learning rate for Adam optimizer (default: 1e-3 good for vae) (2e-4 was good for vqvae)')
     parser.add_argument('--beta', type=float, default=1.0,
         help='contribution of commitment loss, between 0.1 and 2.0 (default: 1.0)')
 
     # Miscellaneous
     parser.add_argument('--output-folder', type=str, default='vqvae',
         help='name of the output folder (default: vqvae)')
-    parser.add_argument('--num-workers', type=int, default=1,
-        help='number of workers for trajectories sampling (default: 1)')
+    parser.add_argument('--num-workers', type=int, default=4,
+        help='number of workers for trajectories sampling (default: 4)')
     parser.add_argument('--device', type=str, default='cuda',
         help='set the device (cpu or cuda, default: cuda)')
     parser.add_argument('--verbose', type=bool, default=False,
@@ -203,8 +226,10 @@ if __name__ == '__main__':
     if not os.path.exists('./models'):
         os.makedirs('./models')
     # Device
-    args.device = torch.device('cuda'
-        if torch.cuda.is_available() else 'cpu')
+    if args.device == 'cuda':
+        args.device = torch.device('cuda'
+            if torch.cuda.is_available() else 'cpu')
+
     # Slurm
     if 'SLURM_JOB_ID' in os.environ:
         args.output_folder += '-{0}'.format(os.environ['SLURM_JOB_ID'])
