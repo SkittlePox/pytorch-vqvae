@@ -14,7 +14,7 @@ from datasets import MiniImagenet
 
 from tensorboardX import SummaryWriter
 
-def cluster(mu, iteration, args, writer):
+def cluster(mu, labels, iteration, args, writer):
     # Reshape the data for clustering (flattening each tensor)
     data_for_clustering = mu.reshape(mu.shape[0], -1)
 
@@ -45,42 +45,6 @@ def cluster(mu, iteration, args, writer):
 
     plt.savefig(args.model_folder+f"/cluster-figs/fig_{iteration}.png")
     plt.close()
-
-def test(data_loader, model, args, writer):
-    if args.arch == 'vqvae':
-        with torch.no_grad():
-            loss_recons, loss_vq = 0., 0.
-            for images, _ in data_loader:
-                images = images.to(args.device)
-                x_tilde, z_e_x, z_q_x = model(images)
-                loss_recons += F.mse_loss(x_tilde, images)
-                loss_vq += F.mse_loss(z_q_x, z_e_x)
-
-            loss_recons /= len(data_loader)
-            loss_vq /= len(data_loader)
-
-        # Logs
-        writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
-        writer.add_scalar('loss/test/quantization', loss_vq.item(), args.steps)
-
-        return loss_recons.item(), loss_vq.item()
-    elif args.arch == 'vae':
-        with torch.no_grad():
-            loss_recons = 0.
-            for images, _ in data_loader:
-                images = images.to(args.device)
-                x_tilde, kl_d = model(images)
-                loss_recons = F.mse_loss(x_tilde, images, reduction='sum') / images.size(0)
-                loss_with_kl = loss_recons + kl_d
-
-            loss_recons /= len(data_loader)
-            loss_with_kl /= len(data_loader)
-
-        # Logs
-        writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
-        writer.add_scalar('loss/test/total', loss_with_kl.item(), args.steps)
-
-        return loss_recons.item(), loss_with_kl.item()
 
 def generate_samples(images, model, args):
     with torch.no_grad():
@@ -162,16 +126,21 @@ def main(args):
         if args.arch == 'vae':
             with torch.no_grad():
                 encodings = []
-                for images, _ in train_loader:
+                labels = []
+                for images, labels_ in train_loader:
                     images = images.to(args.device)
                     mu, logvar = model.encoder(images).chunk(2, dim=1)
                     # I will just take the mean params, it's deterministic. Eventually I may want to sample.
                     mu_detached = mu.detach().cpu()
                     encodings.append(mu_detached)
+                    labels.append(labels_)
 
                 encodings = torch.cat(encodings, dim=0)
                 encodings = encodings[:args.num_datapoints]
-                cluster(encodings, i, args, writer)
+                labels = torch.cat(labels, dim=0)
+                labels = labels[:args.num_datapoints]
+                
+                cluster(encodings, labels, i, args, writer)
 
             # Logs
             # writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
