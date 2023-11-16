@@ -5,14 +5,15 @@ from torchvision import transforms, datasets
 from torchvision.utils import save_image, make_grid
 from torch.distributions.normal import Normal
 
-from modules import VectorQuantizedVAE, VAE, to_scalar
+from modules import VectorQuantizedVAE, VAE, VAEPolicy, to_scalar
 from datasets import MiniImagenet
 
 from tensorboardX import SummaryWriter
 
 def train(data_loader, model, optimizer, args, writer):
-    for images, _ in data_loader:
+    for images, labels in data_loader:
         images = images.to(args.device)
+        labels = labels.to(args.device)
 
         optimizer.zero_grad()
 
@@ -39,6 +40,23 @@ def train(data_loader, model, optimizer, args, writer):
             # Logs
             writer.add_scalar('loss/train/reconstruction', loss_recons.item(), args.steps)
             writer.add_scalar('loss/train/kl-divergence', kl_d, args.steps)
+            writer.add_scalar('loss/train/total', loss.item(), args.steps)
+
+        elif args.arch == 'vaepolicy':
+            x_tilde, kl_d, policy_output = model(images)
+            loss_recons = F.mse_loss(x_tilde, images, reduction='sum') / images.size(0)
+            # Calculate additional loss term for correct image label
+            # labels_onehot = F.one_hot(labels, num_classes=args.num_actions)
+            loss_policy = F.cross_entropy(policy_output, labels)
+            loss = loss_recons + kl_d + args.policy_loss_coeff*loss_policy
+            nll = -Normal(x_tilde, torch.ones_like(x_tilde)).log_prob(images)
+            log_px = nll.mean().item() - np.log(128) + kl_d.item()
+            log_px /= np.log(2)
+            # Logs
+            writer.add_scalar('loss/train/reconstruction', loss_recons.item(), args.steps)
+            writer.add_scalar('loss/train/kl-divergence', kl_d, args.steps)
+            writer.add_scalar('loss/train/policy', loss_policy.item(), args.steps)
+            writer.add_scalar('loss/train/total', loss.item(), args.steps)
 
         loss.backward()
         optimizer.step()
@@ -76,14 +94,39 @@ def test(data_loader, model, args, writer):
 
         # Logs
         writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
+        writer.add_scalar('loss/test/kl-divergence', kl_d, args.steps)
         writer.add_scalar('loss/test/total', loss_with_kl.item(), args.steps)
 
         return loss_recons.item(), loss_with_kl.item()
+    elif args.arch == 'vaepolicy':
+        with torch.no_grad():
+            loss_recons = 0.
+            for images, labels in data_loader:
+                images = images.to(args.device)
+                labels = labels.to(args.device)
+                x_tilde, kl_d, policy_output = model(images)
+                loss_policy = F.cross_entropy(policy_output, labels)
+                loss_recons = F.mse_loss(x_tilde, images, reduction='sum') / images.size(0)
+                loss_with_kl_and_policy = loss_recons + kl_d + args.policy_loss_coeff*loss_policy
+
+            loss_recons /= len(data_loader)
+            loss_with_kl_and_policy /= len(data_loader)
+
+        # Logs
+        writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
+        writer.add_scalar('loss/test/kl-divergence', kl_d, args.steps)
+        writer.add_scalar('loss/test/policy', loss_policy.item(), args.steps)
+        writer.add_scalar('loss/test/total', loss_with_kl_and_policy.item(), args.steps)
+
+        return loss_recons.item(), loss_with_kl_and_policy.item()
 
 def generate_samples(images, model, args):
     with torch.no_grad():
         images = images.to(args.device)
-        x_tilde, _ = model(images)
+        if args.arch == 'vae':
+            x_tilde, _ = model(images)
+        elif args.arch == 'vaepolicy':
+            x_tilde, _, _ = model(images)
     return x_tilde
 
 def main(args):
@@ -149,9 +192,11 @@ def main(args):
 
     # Instantiate model
     if args.arch == 'vae':
-        model = VAE(input_dim=num_channels, dim=args.hidden_size*2, z_dim=args.hidden_size).to(args.device)
+        model = VAE(input_dim=num_channels, hidden_size=args.vae_hidden_size, z_dim=args.latent_dim).to(args.device)
     elif args.arch == 'vqvae':
-        model = VectorQuantizedVAE(num_channels, args.hidden_size, args.k).to(args.device)
+        model = VectorQuantizedVAE(num_channels, args.vae_hidden_size, args.latent_dim).to(args.device)
+    elif args.arch == 'vaepolicy':
+        model = VAEPolicy(input_dim=num_channels, vae_hidden_size=args.vae_hidden_size, z_dim=args.latent_dim, policy_hidden_size=args.latent_dim, policy_out_dim=args.num_actions).to(args.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Generate the samples first once
@@ -193,10 +238,12 @@ if __name__ == '__main__':
         help='which architecture to use')
 
     # Latent space
-    parser.add_argument('--hidden-size', type=int, default=256,
+    parser.add_argument('--latent-dim', type=int, default=128,
         help='size of the latent vectors (default: 256)')
-    parser.add_argument('--k', type=int, default=128,
-        help='number of latent vectors (default: 128)')
+    parser.add_argument('--vae-hidden-size', type=int, default=256,
+        help='size of the hidden layers in the vae (default: 256)')
+    # parser.add_argument('--k', type=int, default=128,
+    #     help='number of latent vectors (default: 128)')
 
     # Optimization
     parser.add_argument('--batch-size', type=int, default=128,
@@ -207,6 +254,12 @@ if __name__ == '__main__':
         help='learning rate for Adam optimizer (default: 1e-3 good for vae) (2e-4 was good for vqvae)')
     parser.add_argument('--beta', type=float, default=1.0,
         help='contribution of commitment loss, between 0.1 and 2.0 (default: 1.0)')
+    parser.add_argument('--policy-loss-coeff', type=float, default=1.0,
+        help='coefficient for policy loss (default: 1.0)')
+    
+    # RL experiment params
+    parser.add_argument('--num-actions', type=int, default=10,
+        help='number of actions for the policy ouput (default: 10)')
 
     # Miscellaneous
     parser.add_argument('--output-folder', type=str, default='vqvae',

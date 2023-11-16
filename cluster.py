@@ -7,14 +7,17 @@ from torch.distributions.normal import Normal
 
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+import umap
 import matplotlib.pyplot as plt
 
-from modules import VectorQuantizedVAE, VAE, to_scalar
+from modules import VectorQuantizedVAE, VAE, VAEPolicy, to_scalar
 from datasets import MiniImagenet
 
 from tensorboardX import SummaryWriter
 
-def cluster(mu, labels, iteration, args, writer):
+def cluster(mu, labels, iteration, args, writer, dim=2):
     # Reshape the data for clustering (flattening each tensor)
     data_for_clustering = mu.reshape(mu.shape[0], -1)
 
@@ -30,27 +33,103 @@ def cluster(mu, labels, iteration, args, writer):
     # Visualization (if needed)
     # This is an example of how you might visualize the results.
     # Adjust the visualization code according to your specific needs.
-    plt.figure(figsize=(12, 6))
 
-    plt.subplot(1, 2, 1)
-    plt.scatter(data_for_clustering[:, 0], data_for_clustering[:, 1], c=kmeans_labels)
-    plt.title('K-means Clustering')
+    data_for_reduction = data_for_clustering
 
-    plt.subplot(1, 2, 2)
-    plt.scatter(data_for_clustering[:, 0], data_for_clustering[:, 1], c=gmm_labels)
-    plt.title('GMM Clustering')
+    pca = PCA(n_components=dim)
+    pca_result = pca.fit_transform(data_for_reduction)
+
+    # Apply t-SNE
+    tsne = TSNE(n_components=dim, random_state=0)
+    tsne_result = tsne.fit_transform(data_for_reduction)
+
+    # Apply UMAP
+    umap_result = umap.UMAP(n_components=dim).fit_transform(data_for_reduction)
+
+    # Visualization
+    if dim == 2:
+        fig = plt.figure(figsize=(18, 18))
+        
+        ax1 = fig.add_subplot(331)
+        ax1.scatter(pca_result[:, 0], pca_result[:, 1], c=kmeans_labels)
+        ax1.set_title(f'PCA Result with K-Means (k={n_clusters})')
+        
+        ax2 = fig.add_subplot(332)
+        ax2.scatter(tsne_result[:, 0], tsne_result[:, 1], c=kmeans_labels)
+        ax2.set_title(f't-SNE Result with K-Means (k={n_clusters})')
+        
+        ax3 = fig.add_subplot(333)
+        ax3.scatter(umap_result[:, 0], umap_result[:, 1], c=kmeans_labels)
+        ax3.set_title(f'UMAP Result with K-Means (k={n_clusters})')
+        
+        ax4 = fig.add_subplot(334)
+        ax4.scatter(pca_result[:, 0], pca_result[:, 1], c=gmm_labels)
+        ax4.set_title(f'PCA Result with GMM (k={n_clusters})')
+        
+        ax5 = fig.add_subplot(335)
+        ax5.scatter(tsne_result[:, 0], tsne_result[:, 1], c=gmm_labels)
+        ax5.set_title(f't-SNE Result with GMM (k={n_clusters})')
+        
+        ax6 = fig.add_subplot(336)
+        ax6.scatter(umap_result[:, 0], umap_result[:, 1], c=gmm_labels)
+        ax6.set_title(f'UMAP Result with GMM (k={n_clusters})')
+        
+        ax7 = fig.add_subplot(337)
+        ax7.scatter(pca_result[:, 0], pca_result[:, 1], c=labels)
+        ax7.set_title(f'PCA Result with True Labels')
+        
+        ax8 = fig.add_subplot(338)
+        ax8.scatter(tsne_result[:, 0], tsne_result[:, 1], c=labels)
+        ax8.set_title(f't-SNE Result with True Labels')
+        
+        ax9 = fig.add_subplot(339)
+        ax9.scatter(umap_result[:, 0], umap_result[:, 1], c=labels)
+        ax9.set_title(f'UMAP Result with True Labels')
+    
+    elif dim == 3:
+        fig = plt.figure(figsize=(18, 18))
+        
+        ax1 = fig.add_subplot(331, projection='3d')
+        ax1.scatter(pca_result[:, 0], pca_result[:, 1], pca_result[:, 2], c=kmeans_labels)
+        ax1.set_title(f'PCA Result with K-Means (k={n_clusters})')
+        
+        ax2 = fig.add_subplot(332, projection='3d')
+        ax2.scatter(tsne_result[:, 0], tsne_result[:, 1], tsne_result[:, 2], c=kmeans_labels)
+        ax2.set_title(f't-SNE Result with K-Means (k={n_clusters})')
+        
+        ax3 = fig.add_subplot(333, projection='3d')
+        ax3.scatter(umap_result[:, 0], umap_result[:, 1], umap_result[:, 2], c=kmeans_labels)
+        ax3.set_title(f'UMAP Result with K-Means (k={n_clusters})')
+        
+        ax4 = fig.add_subplot(334, projection='3d')
+        ax4.scatter(pca_result[:, 0], pca_result[:, 1], pca_result[:, 2], c=gmm_labels)
+        ax4.set_title(f'PCA Result with GMM (k={n_clusters})')
+        
+        ax5 = fig.add_subplot(335, projection='3d')
+        ax5.scatter(tsne_result[:, 0], tsne_result[:, 1], tsne_result[:, 2], c=gmm_labels)
+        ax5.set_title(f't-SNE Result with GMM (k={n_clusters})')
+        
+        ax6 = fig.add_subplot(336, projection='3d')
+        ax6.scatter(umap_result[:, 0], umap_result[:, 1], umap_result[:, 2], c=gmm_labels)
+        ax6.set_title(f'UMAP Result with GMM (k={n_clusters})')
+        
+        ax7 = fig.add_subplot(337, projection='3d')
+        ax7.scatter(pca_result[:, 0], pca_result[:, 1], pca_result[:, 2], c=labels)
+        ax7.set_title(f'PCA Result with True Labels')
+        
+        ax8 = fig.add_subplot(338, projection='3d')
+        ax8.scatter(tsne_result[:, 0], tsne_result[:, 1], tsne_result[:, 2], c=labels)
+        ax8.set_title(f't-SNE Result with True Labels')
+        
+        ax9 = fig.add_subplot(339, projection='3d')
+        ax9.scatter(umap_result[:, 0], umap_result[:, 1], umap_result[:, 2], c=labels)
+        ax9.set_title(f'UMAP Result with True Labels')
 
     if not os.path.exists(args.model_folder+"/cluster-figs"):
         os.makedirs(args.model_folder+"/cluster-figs")
 
-    plt.savefig(args.model_folder+f"/cluster-figs/fig_{iteration}.png")
+    plt.savefig(args.model_folder+f"/cluster-figs/fig_{iteration}_{dim}d.png")
     plt.close()
-
-def generate_samples(images, model, args):
-    with torch.no_grad():
-        images = images.to(args.device)
-        x_tilde, _ = model(images)
-    return x_tilde
 
 def main(args):
     writer = SummaryWriter('./logs/{0}'.format(args.output_folder))
@@ -115,15 +194,17 @@ def main(args):
 
     # Instantiate model
     if args.arch == 'vae':
-        model = VAE(input_dim=num_channels, dim=args.hidden_size*2, z_dim=args.hidden_size).to(args.device)
+        model = VAE(input_dim=num_channels, hidden_size=args.vae_hidden_size, z_dim=args.latent_dim).to(args.device)
     elif args.arch == 'vqvae':
-        model = VectorQuantizedVAE(num_channels, args.hidden_size, args.k).to(args.device)
+        model = VectorQuantizedVAE(num_channels, args.vae_hidden_size, args.latent_dim).to(args.device)
+    elif args.arch == 'vaepolicy':
+        model = VAEPolicy(input_dim=num_channels, vae_hidden_size=args.vae_hidden_size, z_dim=args.latent_dim, policy_hidden_size=args.latent_dim, policy_out_dim=args.num_actions).to(args.device)
 
     for i in range(1, args.num_models + 1):
-        print(f"Clustering iteration {i}")
+        print(f"Clustering model {i}")
         model_path = os.path.join(args.model_folder, f'model_{i}.pt')
         model.load_state_dict(torch.load(model_path))
-        if args.arch == 'vae':
+        if args.arch in ('vae', 'vaepolicy'):
             with torch.no_grad():
                 encodings = []
                 labels = []
@@ -135,38 +216,15 @@ def main(args):
                     encodings.append(mu_detached)
                     labels.append(labels_)
 
+                    if len(encodings) * args.batch_size > args.num_datapoints:
+                        break
+
                 encodings = torch.cat(encodings, dim=0)
                 encodings = encodings[:args.num_datapoints]
                 labels = torch.cat(labels, dim=0)
                 labels = labels[:args.num_datapoints]
                 
-                cluster(encodings, labels, i, args, writer)
-
-            # Logs
-            # writer.add_scalar('loss/test/reconstruction', loss_recons.item(), args.steps)
-            # writer.add_scalar('loss/test/total', loss_with_kl.item(), args.steps)
-
-    return
-    # Generate the samples first once
-    reconstruction = generate_samples(fixed_images, model, args)
-    grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
-    writer.add_image('reconstruction', grid, 0)
-
-    best_loss = -1.
-    for epoch in range(args.num_epochs):
-        train(train_loader, model, optimizer, args, writer)
-        loss, _ = test(valid_loader, model, args, writer)
-
-        reconstruction = generate_samples(fixed_images, model, args)
-        grid = make_grid(reconstruction.cpu(), nrow=8, value_range=(-1, 1), normalize=True)
-        writer.add_image('reconstruction', grid, epoch + 1)
-
-        if (epoch == 0) or (loss < best_loss):
-            best_loss = loss
-            with open('{0}/best.pt'.format(save_filename), 'wb') as f:
-                torch.save(model.state_dict(), f)
-        with open('{0}/model_{1}.pt'.format(save_filename, epoch + 1), 'wb') as f:
-            torch.save(model.state_dict(), f)
+                cluster(encodings, labels, i, args, writer, dim=2)
 
 if __name__ == '__main__':
     import argparse
@@ -182,6 +240,8 @@ if __name__ == '__main__':
         help='name of the dataset (mnist, fashion-mnist, cifar10, miniimagenet)')
     parser.add_argument('--model-folder', type=str, default='models/vae-k128-12070364',
         help='the folder containing pytorch models')
+    parser.add_argument('--log-folder', type=str, default='logs/vae-k128-12070364',
+        help='the folder containing tensorboard logs')
     parser.add_argument('--num-models', type=int, default=25,
         help='number of models in the folder')
 
@@ -191,10 +251,10 @@ if __name__ == '__main__':
         help='which architecture to use')
 
     # Latent space
-    parser.add_argument('--hidden-size', type=int, default=128,
-        help='size of the latent vectors (default: 128)')
-    parser.add_argument('--k', type=int, default=128,
-        help='number of latent vectors (default: 128)')
+    parser.add_argument('--latent-dim', type=int, default=128,
+        help='size of the latent vectors (default: 256)')
+    parser.add_argument('--vae-hidden-size', type=int, default=256,
+        help='size of the hidden layers in the vae (default: 256)')
 
     # Optimization
     parser.add_argument('--batch-size', type=int, default=128,
@@ -212,6 +272,9 @@ if __name__ == '__main__':
     parser.add_argument('--num-datapoints', type=int, default=1000,
         help='number of datapoints to cluster')
     
+    # RL experiment params
+    parser.add_argument('--num-actions', type=int, default=10,
+        help='number of actions for the policy ouput (default: 10)')
     
     # Miscellaneous
     parser.add_argument('--output-folder', type=str, default='vqvae',

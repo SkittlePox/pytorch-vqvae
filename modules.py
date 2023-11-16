@@ -24,33 +24,33 @@ def weights_init(m):
 
 
 class VAE(nn.Module):
-    def __init__(self, input_dim, dim, z_dim):
+    def __init__(self, input_dim, hidden_size, z_dim):
         super().__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(input_dim, dim, 4, 2, 1),
-            nn.BatchNorm2d(dim),
+            nn.Conv2d(input_dim, hidden_size, 4, 2, 1),
+            nn.BatchNorm2d(hidden_size),
             nn.ReLU(True),
-            nn.Conv2d(dim, dim, 4, 2, 1),
-            nn.BatchNorm2d(dim),
+            nn.Conv2d(hidden_size, hidden_size, 4, 2, 1),
+            nn.BatchNorm2d(hidden_size),
             nn.ReLU(True),
-            nn.Conv2d(dim, dim, 5, 1, 0),
-            nn.BatchNorm2d(dim),
+            nn.Conv2d(hidden_size, hidden_size, 5, 1, 0),
+            nn.BatchNorm2d(hidden_size),
             nn.ReLU(True),
-            nn.Conv2d(dim, z_dim * 2, 3, 1, 0),
+            nn.Conv2d(hidden_size, z_dim * 2, 3, 1, 0),
             nn.BatchNorm2d(z_dim * 2)
         )
 
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(z_dim, dim, 3, 1, 0),
-            nn.BatchNorm2d(dim),
+            nn.ConvTranspose2d(z_dim, hidden_size, 3, 1, 0),
+            nn.BatchNorm2d(hidden_size),
             nn.ReLU(True),
-            nn.ConvTranspose2d(dim, dim, 5, 1, 0),
-            nn.BatchNorm2d(dim),
+            nn.ConvTranspose2d(hidden_size, hidden_size, 5, 1, 0),
+            nn.BatchNorm2d(hidden_size),
             nn.ReLU(True),
-            nn.ConvTranspose2d(dim, dim, 4, 2, 1),
-            nn.BatchNorm2d(dim),
+            nn.ConvTranspose2d(hidden_size, hidden_size, 4, 2, 1),
+            nn.BatchNorm2d(hidden_size),
             nn.ReLU(True),
-            nn.ConvTranspose2d(dim, input_dim, 4, 2, 1),
+            nn.ConvTranspose2d(hidden_size, input_dim, 4, 2, 1),
             nn.Tanh()
         )
 
@@ -79,6 +79,84 @@ class VAE(nn.Module):
 
         # The forward function returns the decoded output and the KL divergence
         return x_tilde, kl_div
+    
+
+class PolicyNetwork(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(PolicyNetwork, self).__init__()
+        self.fc1 = nn.Linear(input_size, hidden_size)  # Input layer to hidden layer
+        self.fc2 = nn.Linear(hidden_size, hidden_size) # Hidden layer to hidden layer
+        self.fc3 = nn.Linear(hidden_size, output_size) # Hidden layer to output layer
+        self.relu = nn.ReLU()  # Activation function
+
+    def forward(self, x):
+        x = x.view(x.size(0), -1)  # Flatten the feature and spatial dimensions
+        x = self.relu(self.fc1(x))  # Activation function after first layer
+        x = self.relu(self.fc2(x))  # Activation function after second layer
+        output = self.fc3(x)        # Output layer, no activation
+        return output
+
+
+class VAEPolicy(nn.Module):
+    def __init__(self, input_dim, vae_hidden_size, z_dim, policy_hidden_size, policy_out_dim):
+        super(VAEPolicy, self).__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(input_dim, vae_hidden_size, 4, 2, 1),
+            nn.BatchNorm2d(vae_hidden_size),
+            nn.ReLU(True),
+            nn.Conv2d(vae_hidden_size, vae_hidden_size, 4, 2, 1),
+            nn.BatchNorm2d(vae_hidden_size),
+            nn.ReLU(True),
+            nn.Conv2d(vae_hidden_size, vae_hidden_size, 5, 1, 0),
+            nn.BatchNorm2d(vae_hidden_size),
+            nn.ReLU(True),
+            nn.Conv2d(vae_hidden_size, z_dim * 2, 3, 1, 0),
+            nn.BatchNorm2d(z_dim * 2)
+        )
+
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(z_dim, vae_hidden_size, 3, 1, 0),
+            nn.BatchNorm2d(vae_hidden_size),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(vae_hidden_size, vae_hidden_size, 5, 1, 0),
+            nn.BatchNorm2d(vae_hidden_size),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(vae_hidden_size, vae_hidden_size, 4, 2, 1),
+            nn.BatchNorm2d(vae_hidden_size),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(vae_hidden_size, input_dim, 4, 2, 1),
+            nn.Tanh()
+        )
+        
+        self.policy = PolicyNetwork(input_size=z_dim, hidden_size=policy_hidden_size, output_size=policy_out_dim)
+
+    def forward(self, x):
+        # The encoder takes the input x and returns two tensors: mu and logvar
+        # These tensors are chunked along dimension 1
+        mu, logvar = self.encoder(x).chunk(2, dim=1)
+
+        # q_z_x is the distribution of the encoded input
+        # It is a Normal distribution with mean mu and standard deviation exp(logvar / 2)
+        q_z_x = Normal(mu, logvar.mul(.5).exp())
+
+        # p_z is the prior distribution
+        # It is a Normal distribution with mean 0 and standard deviation 1
+        p_z = Normal(torch.zeros_like(mu), torch.ones_like(logvar))
+
+        # kl_div is the KL divergence between the encoded distribution and the prior
+        # It is calculated for each item in the batch and then averaged
+        kl_div = kl_divergence(q_z_x, p_z).sum(1).mean()
+
+        # x_tilde is the decoded output
+        # It is generated by sampling from the encoded distribution and passing the sample through the decoder        
+        sample = q_z_x.rsample()
+        
+        x_tilde = self.decoder(sample)
+        # Pass the encoded representation through the policy network
+        policy_output = self.policy(sample)
+
+        return x_tilde, kl_div, policy_output
+
 
 
 class VQEmbedding(nn.Module):
